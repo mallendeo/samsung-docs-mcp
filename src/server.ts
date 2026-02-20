@@ -22,7 +22,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const server = new McpServer({
   name: "samsung-docs",
-  version: "1.2.0",
+  version: "1.3.0",
 });
 
 server.tool(
@@ -385,7 +385,7 @@ Bun.serve({
     }
 
     if (url.pathname === "/" || url.pathname === "/health") {
-      return Response.json({ status: "ok", name: "samsung-docs-mcp", version: "1.2.0" });
+      return Response.json({ status: "ok", name: "samsung-docs-mcp", version: "1.3.0" });
     }
 
     return new Response("Not found", { status: 404 });

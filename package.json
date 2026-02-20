@@ -1,0 +1,14 @@
+{
+  "name": "samsung-docs-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "dev": "bun --watch run src/server.ts",
+    "populate": "bun run src/server.ts --populate"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "node-html-parser": "^7.0.2"
+  }
+}

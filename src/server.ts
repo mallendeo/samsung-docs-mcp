@@ -7,10 +7,10 @@ import {
   writeCache,
   writeIndex,
   readIndex,
-  searchCache,
   clearCache,
   cacheStats,
 } from "./cache.js";
+import { search, buildSearchIndex } from "./search.js";
 import { populate } from "./populate.js";
 
 // CLI: bun run src/server.ts --populate [--concurrency 5] [--section all]
@@ -33,37 +33,36 @@ const server = new McpServer({
 
 server.tool(
   "search",
-  "Search Samsung TV and Signage documentation. Searches local cache first, falls back to online fetching if no results found.",
-  { query: z.string().describe("Search query (e.g. 'AVPlay API', 'signage remote control', 'web engine specifications')") },
-  async ({ query }) => {
-    // 1. Try local cache first
-    const localResults = await searchCache(query).catch(() => []);
+  "Search Samsung TV and Signage documentation using full-text search (BM25+ scoring with fuzzy matching). Searches local cache first, falls back to online fetching if no results found.",
+  {
+    query: z.string().describe("Search query (e.g. 'AVPlay API', 'signage remote control', 'web engine specifications')"),
+    maxResults: z.number().min(1).max(25).default(10).describe("Maximum number of results to return"),
+  },
+  async ({ query, maxResults }) => {
+    const localResults = await search(query, maxResults).catch(() => []);
 
     if (localResults.length > 0) {
       const text = localResults
         .map((r) => {
           const matchPreview = r.matches.join("\n  ");
-          return `## ${r.url}\n  ${matchPreview}`;
+          return `## ${r.title}\nURL: ${r.url} (score: ${r.score.toFixed(1)})\n  ${matchPreview}`;
         })
         .join("\n\n");
 
       return {
-        content: [{ type: "text" as const, text: `Found ${localResults.length} cached result(s):\n\n${text}` }],
+        content: [{ type: "text" as const, text: `Found ${localResults.length} result(s) for "${query}":\n\n${text}` }],
       };
     }
 
-    // No local results - fetch online via index (or discover if no index)
-    let index = await readIndex();
-    if (!index) {
-      // Quick discover from the main entry point
+    let idx = await readIndex();
+    if (!idx) {
       const links = await discoverLinks(ENTRY_POINTS["smarttv-develop"]);
       await writeIndex(links);
-      index = links;
+      idx = links;
     }
 
-    // Find URLs whose title matches the query
     const queryTerms = query.toLowerCase().split(/\s+/);
-    const matchingUrls = index.filter((item) => {
+    const matchingUrls = idx.filter((item) => {
       const titleLower = item.title.toLowerCase();
       return queryTerms.some((t) => titleLower.includes(t));
     });
@@ -74,7 +73,6 @@ server.tool(
       };
     }
 
-    // Fetch top matches (max 3) and cache them
     const toFetch = matchingUrls.slice(0, 3);
     const fetched: string[] = [];
 
@@ -227,8 +225,7 @@ server.tool(
   }
 );
 
-// Stateful sessions so transport can be reused within a session
-const sessions = new Map<string, WebStandardStreamableHTTPServerTransport>();
+let activeTransport: WebStandardStreamableHTTPServerTransport | null = null;
 
 Bun.serve({
   port: PORT,
@@ -236,26 +233,23 @@ Bun.serve({
     const url = new URL(req.url);
 
     if (url.pathname === "/mcp") {
-      // Check for existing session
       const sessionId = req.headers.get("mcp-session-id");
 
-      if (sessionId && sessions.has(sessionId)) {
-        // Reuse existing transport for this session
-        return sessions.get(sessionId)!.handleRequest(req);
+      if (sessionId && activeTransport) {
+        return activeTransport.handleRequest(req);
       }
 
-      // New session: create fresh transport
+      if (activeTransport) {
+        await server.close();
+        activeTransport = null;
+      }
+
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: () => crypto.randomUUID(),
         enableJsonResponse: true,
-        onsessioninitialized: (id) => {
-          sessions.set(id, transport);
-        },
-        onsessionclosed: (id) => {
-          sessions.delete(id);
-        },
       });
 
+      activeTransport = transport;
       await server.connect(transport);
       return transport.handleRequest(req);
     }

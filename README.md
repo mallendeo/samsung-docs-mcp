@@ -65,13 +65,15 @@ List all known documentation pages. Supports glob filtering on URL paths.
 Extract all Samsung Product API privileges from cached docs, grouped by privilege level.
 
 - `files` (string[], optional) — glob patterns to filter pages (default: `["*samsung-product-api-references/*-api*"]`)
+- `since` (string, optional) — version filter using operators: `>=4`, `<6.5`, `>=2,<=5`. Filters by API-level Since version.
 
 ### api-overview
 
-Compact overview of all Samsung Product APIs via WebIDL definitions extracted from each cached API reference page.
+Compact overview of all Samsung Product APIs via WebIDL definitions extracted from each cached API reference page. When `since` is provided, shows per-method version info instead of WebIDL.
 
 - `files` (string[], optional) — glob patterns to filter pages (default: `["*samsung-product-api-references/*-api*"]`)
 - `device` (enum, default "all") — `tv`, `signage`, or `all`
+- `since` (string, optional) — version filter using operators: `>=4`, `<6.5`, `>=2,<=5`, `!=3`. Comma-separated for ranges. Filters individual methods by their Since version.
 
 ### clear-cache
 

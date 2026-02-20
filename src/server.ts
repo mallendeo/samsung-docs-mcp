@@ -9,6 +9,60 @@ import pkg from "../package.json";
 
 const { version } = pkg;
 
+function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
+}
+
+function matchesVersionFilter(ver: string, filter: string): boolean {
+  return filter.split(",").every((part) => {
+    const m = part.trim().match(/^(>=|<=|!=|>|<|=)(.+)$/);
+    if (!m) return false;
+    const cmp = compareVersions(ver, m[2]);
+    switch (m[1]) {
+      case ">=": return cmp >= 0;
+      case "<=": return cmp <= 0;
+      case ">":  return cmp > 0;
+      case "<":  return cmp < 0;
+      case "=":  return cmp === 0;
+      case "!=": return cmp !== 0;
+      default:   return false;
+    }
+  });
+}
+
+function extractApiSince(content: string): string | null {
+  const m = content.match(/\nSince\s*:\s*([\d.]+)/);
+  return m?.[1] ?? null;
+}
+
+function extractMethods(content: string): { name: string; since: string; signature: string }[] {
+  const apiSince = extractApiSince(content) ?? "unknown";
+  const methods: { name: string; since: string; signature: string }[] = [];
+  const sections = content.split(/(?=^#### )/m);
+
+  for (const section of sections) {
+    const header = section.match(/^#### (\w+)/);
+    if (!header) continue;
+
+    const sinceMatch = section.match(/Since\s*:\s*([\d.]+)/);
+    const since = sinceMatch?.[1] ?? apiSince;
+
+    const sigMatch = section.match(/```\n([^\n]*?\(.*?\)[^\n]*)\n```/);
+    const signature = sigMatch?.[1]?.trim() ?? header[1] + "()";
+
+    methods.push({ name: header[1], since, signature });
+  }
+
+  return methods;
+}
+
 // CLI: bun run src/server.ts --populate [--concurrency 5] [--section all]
 if (process.argv.includes("--populate")) {
   const concIdx = process.argv.indexOf("--concurrency");
@@ -253,8 +307,9 @@ server.tool(
   "Extract and list all Samsung Product API privileges from cached docs, grouped by privilege level. Scans all product API reference pages (TV + Signage) and returns API name, privilege level, and privilege URL.",
   {
     files: z.array(z.string()).optional().describe("Glob patterns to filter pages (default: ['*samsung-product-api-references/*-api*'])"),
+    since: z.string().optional().describe("Version filter using operators: '>=4', '<6.5', '>=2,<=5'. Filters APIs by their top-level Since version."),
   },
-  async ({ files }) => {
+  async ({ files, since }) => {
     const db = await readDb();
     const patterns = files?.length ? files : ["*samsung-product-api-references/*-api*"];
     const entries = Object.entries(db.pages).filter(([href]) =>
@@ -273,6 +328,11 @@ server.tool(
     for (const [href, entry] of entries) {
       const content = await readCached(href);
       if (!content) continue;
+
+      if (since) {
+        const apiVer = extractApiSince(content);
+        if (!apiVer || !matchesVersionFilter(apiVer, since)) continue;
+      }
 
       const device = href.includes("device=signage") ? "signage" : href.includes("device=htv") ? "htv" : null;
       const apiName = entry.title;
@@ -336,12 +396,13 @@ server.tool(
 
 server.tool(
   "api-overview",
-  "Return a compact overview of all Samsung Product APIs by extracting the WebIDL definitions from each cached API reference page. Groups by API name with privilege info. Much smaller than fetching full pages.",
+  "Return a compact overview of all Samsung Product APIs by extracting the WebIDL definitions from each cached API reference page. Groups by API name with privilege info. When 'since' is provided, shows per-method version info instead of WebIDL.",
   {
     files: z.array(z.string()).optional().describe("Glob patterns to filter pages (default: ['*samsung-product-api-references/*-api*'])"),
     device: z.enum(["all", "tv", "signage"]).default("all").describe("Filter by device type"),
+    since: z.string().optional().describe("Version filter using operators: '>=4', '<6.5', '>=2,<=5'. Filters individual methods by their Since version."),
   },
-  async ({ files, device }) => {
+  async ({ files, device, since }) => {
     const db = await readDb();
     const patterns = files?.length ? files : ["*samsung-product-api-references/*-api*"];
     let entries = Object.entries(db.pages).filter(([href]) =>
@@ -361,25 +422,31 @@ server.tool(
       if (!content) continue;
 
       const suffix = href.includes("device=signage") ? " (signage)" : href.includes("device=htv") ? " (htv)" : "";
+      const apiSince = extractApiSince(content) ?? "unknown";
 
-      // Extract privilege info
       const levelMatch = content.match(/Privilege\s+Level\s*:\s*(Public|Partner|Platform)/i);
       const privMatch = content.match(/Privilege\s*:\s*(http\S+)/);
       const privLine = levelMatch
         ? `${levelMatch[1]}${privMatch ? ` — ${privMatch[1]}` : ""}`
         : "none";
 
-      // Extract Full WebIDL block
-      const webidlMatch = content.match(/## (?:\d+\.\s*)?Full WebIDL\s*\n+```[\s\S]*?\n([\s\S]*?)\n```/);
-      if (webidlMatch) {
-        sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n\`\`\`webidl\n${webidlMatch[1].trim()}\n\`\`\``);
+      if (since) {
+        const methods = extractMethods(content);
+        const filtered = methods.filter((m) => matchesVersionFilter(m.since, since));
+        if (filtered.length === 0) continue;
+        const lines = filtered.map((m) => `- ${m.signature} — since ${m.since}`);
+        sections.push(`## ${entry.title}${suffix} (since ${apiSince})\nPrivilege: ${privLine}\n${lines.join("\n")}`);
       } else {
-        // Fallback: extract Summary of Interfaces and Methods table
-        const summaryMatch = content.match(/## Summary of Interfaces and Methods\s*\n([\s\S]*?)(?=\n## )/);
-        if (summaryMatch) {
-          sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n${summaryMatch[1].trim()}`);
+        const webidlMatch = content.match(/## (?:\d+\.\s*)?Full WebIDL\s*\n+```[\s\S]*?\n([\s\S]*?)\n```/);
+        if (webidlMatch) {
+          sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n\`\`\`webidl\n${webidlMatch[1].trim()}\n\`\`\``);
         } else {
-          sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n(no WebIDL or summary found)`);
+          const summaryMatch = content.match(/## Summary of Interfaces and Methods\s*\n([\s\S]*?)(?=\n## )/);
+          if (summaryMatch) {
+            sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n${summaryMatch[1].trim()}`);
+          } else {
+            sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n(no WebIDL or summary found)`);
+          }
         }
       }
     }

@@ -1,6 +1,6 @@
 {
   "name": "samsung-docs-mcp",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "type": "module",
   "scripts": {
     "start": "bun run src/server.ts",

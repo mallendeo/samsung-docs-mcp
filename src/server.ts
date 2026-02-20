@@ -4,7 +4,9 @@ import { z } from "zod";
 import { discoverLinks, fetchPage, ENTRY_POINTS } from "./scraper.js";
 import { readCached, writeCache, readDb, writeDb, clearCache, cacheStats } from "./cache.js";
 import { search, matchesGlob } from "./search.js";
-import { populate } from "./populate.js";
+import { populate, WEEK_MS } from "./populate.js";
+
+const { version } = await Bun.file(new URL("../package.json", import.meta.url)).json();
 
 // CLI: bun run src/server.ts --populate [--concurrency 5] [--section all]
 if (process.argv.includes("--populate")) {
@@ -18,11 +20,10 @@ if (process.argv.includes("--populate")) {
 }
 
 const PORT = Number(process.env.PORT) || 8787;
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const server = new McpServer({
   name: "samsung-docs",
-  version: "1.4.0",
+  version,
 });
 
 server.tool(
@@ -111,14 +112,8 @@ server.tool(
   },
   async ({ section, fetchAll, concurrency }) => {
     if (fetchAll) {
-      const oldLog = console.log;
       const lines: string[] = [];
-      console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
-      try {
-        await populate({ concurrency, section });
-      } finally {
-        console.log = oldLog;
-      }
+      await populate({ concurrency, section, log: (...args) => lines.push(args.map(String).join(" ")) });
       return {
         content: [{ type: "text" as const, text: lines.join("\n") }],
       };
@@ -196,7 +191,7 @@ server.tool(
 
 server.tool(
   "clear-cache",
-  "Clear all cached Samsung docs pages and the index. Use this to force re-fetching of all pages.",
+  "Clear all cached pages and the db. Use to force a full re-fetch.",
   {},
   async () => {
     const count = await clearCache();
@@ -208,7 +203,7 @@ server.tool(
 
 server.tool(
   "cache-status",
-  "Show the current cache status: number of cached pages, whether index exists, and cache directory location.",
+  "Show cache stats: directory, populate timestamp, number of cached pages.",
   {},
   async () => {
     const stats = await cacheStats();
@@ -444,7 +439,7 @@ Bun.serve({
     }
 
     if (url.pathname === "/" || url.pathname === "/health") {
-      return Response.json({ status: "ok", name: "samsung-docs-mcp", version: "1.4.0" });
+      return Response.json({ status: "ok", name: "samsung-docs-mcp", version });
     }
 
     return new Response("Not found", { status: 404 });

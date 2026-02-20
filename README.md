@@ -60,6 +60,19 @@ List all known documentation pages. Supports glob filtering on URL paths.
 
 - `files` (string[], optional) — glob patterns to filter pages (e.g. `["*product-api*"]`)
 
+### list-apis
+
+Extract all Samsung Product API privileges from cached docs, grouped by privilege level.
+
+- `files` (string[], optional) — glob patterns to filter pages (default: `["*samsung-product-api-references/*-api*"]`)
+
+### api-overview
+
+Compact overview of all Samsung Product APIs via WebIDL definitions extracted from each cached API reference page.
+
+- `files` (string[], optional) — glob patterns to filter pages (default: `["*samsung-product-api-references/*-api*"]`)
+- `device` (enum, default "all") — `tv`, `signage`, or `all`
+
 ### clear-cache
 
 Wipe all cached pages and the db. Use to force a full re-fetch.

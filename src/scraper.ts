@@ -145,7 +145,6 @@ export async function fetchPage(url: string): Promise<{ title: string; markdown:
 
   const title = doc.querySelector("title")?.text?.replace(" | Samsung Developer", "").trim() || "Untitled";
 
-  // Main content is in <main> element
   const main = doc.querySelector("main");
   if (!main) {
     // Fallback: try article or the doc content area

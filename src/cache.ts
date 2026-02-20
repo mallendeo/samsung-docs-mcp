@@ -2,7 +2,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { addToSearchIndex, resetSearchIndex } from "./search.js";
 
-const CACHE_DIR = process.env.CACHE_DIR || join(homedir(), ".cache", "mcp", "samsung-docs");
+export const CACHE_DIR = process.env.CACHE_DIR || join(homedir(), ".cache", "mcp", "samsung-docs");
 const DB_PATH = join(CACHE_DIR, "db.json");
 
 export interface PageEntry {

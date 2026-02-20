@@ -113,12 +113,26 @@ export function resetSearchIndex(): void {
   indexedIds = new Set();
 }
 
-export async function search(query: string, maxResults = 10): Promise<SearchResult[]> {
+export function matchesGlob(url: string, pattern: string): boolean {
+  const re = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, ".*")
+    .replace(/\?/g, ".");
+  return new RegExp(re).test(url);
+}
+
+export async function search(query: string, maxResults = 10, files?: string[]): Promise<SearchResult[]> {
   if (!index) {
     await buildSearchIndex();
   }
 
-  const results = index!.search(query).slice(0, maxResults);
+  let raw = index!.search(query);
+
+  if (files?.length) {
+    raw = raw.filter((r) => files.some((pattern) => matchesGlob(r.url, pattern)));
+  }
+
+  const results = raw.slice(0, maxResults);
 
   const searchResults: SearchResult[] = [];
   for (const result of results) {

@@ -3,7 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import { discoverLinks, fetchPage, ENTRY_POINTS } from "./scraper.js";
 import { readCached, writeCache, readDb, writeDb, clearCache, cacheStats } from "./cache.js";
-import { search } from "./search.js";
+import { search, matchesGlob } from "./search.js";
 import { populate } from "./populate.js";
 
 // CLI: bun run src/server.ts --populate [--concurrency 5] [--section all]
@@ -31,9 +31,10 @@ server.tool(
   {
     query: z.string().describe("Search query (e.g. 'AVPlay API', 'signage remote control', 'web engine specifications')"),
     maxResults: z.number().min(1).max(25).default(10).describe("Maximum number of results to return"),
+    files: z.array(z.string()).optional().describe("Glob patterns to filter which pages to search (e.g. ['*product-api*', '*signage*'])"),
   },
-  async ({ query, maxResults }) => {
-    const localResults = await search(query, maxResults).catch(() => []);
+  async ({ query, maxResults, files }) => {
+    const localResults = await search(query, maxResults, files).catch(() => []);
 
     if (localResults.length > 0) {
       const text = localResults
@@ -218,6 +219,34 @@ server.tool(
       content: [{
         type: "text" as const,
         text: `Cache directory: ${stats.cacheDir}\nPopulated: ${populatedLabel}\nCached pages: ${stats.pageCount}`,
+      }],
+    };
+  }
+);
+
+server.tool(
+  "list-pages",
+  "List all known documentation pages. Supports glob filtering on URL paths.",
+  {
+    files: z.array(z.string()).optional().describe("Glob patterns to filter pages (e.g. ['*product-api*']). Returns all pages if omitted."),
+  },
+  async ({ files }) => {
+    const db = await readDb();
+    let entries = Object.entries(db.pages);
+
+    if (files?.length) {
+      entries = entries.filter(([href]) => files.some((p) => matchesGlob(href, p)));
+    }
+
+    const lines = entries.map(([href, e]) => {
+      const status = e.fetchedAt ? "cached" : "pending";
+      return `${status} | ${e.title} | ${href}`;
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `${entries.length} page(s):\n\n${lines.join("\n")}`,
       }],
     };
   }

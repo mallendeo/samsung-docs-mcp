@@ -2,7 +2,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { addToSearchIndex, resetSearchIndex } from "./search.js";
 
-const CACHE_DIR = join(homedir(), ".cache", "mcp", "samsung-docs");
+const CACHE_DIR = process.env.CACHE_DIR || join(homedir(), ".cache", "mcp", "samsung-docs");
 
 async function ensureCacheDir(subdir?: string) {
   const dir = subdir ? join(CACHE_DIR, subdir) : CACHE_DIR;

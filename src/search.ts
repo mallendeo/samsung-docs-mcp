@@ -2,7 +2,7 @@ import MiniSearch from "minisearch";
 import { join } from "path";
 import { homedir } from "os";
 
-const CACHE_DIR = join(homedir(), ".cache", "mcp", "samsung-docs");
+const CACHE_DIR = process.env.CACHE_DIR || join(homedir(), ".cache", "mcp", "samsung-docs");
 const PAGES_DIR = join(CACHE_DIR, "pages");
 
 interface SearchDoc {

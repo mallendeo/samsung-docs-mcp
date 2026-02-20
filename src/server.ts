@@ -2,15 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { discoverLinks, fetchPage, ENTRY_POINTS } from "./scraper.js";
-import {
-  readCached,
-  writeCache,
-  writeIndex,
-  readIndex,
-  clearCache,
-  cacheStats,
-} from "./cache.js";
-import { search, buildSearchIndex } from "./search.js";
+import { readCached, writeCache, readDb, writeDb, clearCache, cacheStats } from "./cache.js";
+import { search } from "./search.js";
 import { populate } from "./populate.js";
 
 // CLI: bun run src/server.ts --populate [--concurrency 5] [--section all]
@@ -25,6 +18,7 @@ if (process.argv.includes("--populate")) {
 }
 
 const PORT = Number(process.env.PORT) || 8787;
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
 const server = new McpServer({
   name: "samsung-docs",
@@ -54,22 +48,22 @@ server.tool(
       };
     }
 
-    let idx = await readIndex();
-    if (!idx) {
-      const links = await discoverLinks(ENTRY_POINTS["smarttv-develop"]);
-      await writeIndex(links);
-      idx = links;
+    // Fallback: match against db titles, fetch on demand
+    const db = await readDb();
+    if (Object.keys(db.pages).length === 0) {
+      return {
+        content: [{ type: "text" as const, text: `No results found for "${query}". Cache is still being built — try again shortly.` }],
+      };
     }
 
     const queryTerms = query.toLowerCase().split(/\s+/);
-    const matchingUrls = idx.filter((item) => {
-      const titleLower = item.title.toLowerCase();
-      return queryTerms.some((t) => titleLower.includes(t));
-    });
+    const matchingUrls = Object.entries(db.pages)
+      .filter(([, entry]) => queryTerms.some((t) => entry.title.toLowerCase().includes(t)))
+      .map(([href, entry]) => ({ href, title: entry.title }));
 
     if (matchingUrls.length === 0) {
       return {
-        content: [{ type: "text" as const, text: `No results found for "${query}". Try running 'discover' first to build the local cache, then search again.` }],
+        content: [{ type: "text" as const, text: `No results found for "${query}". Try a different query or wait for the cache to finish building.` }],
       };
     }
 
@@ -80,11 +74,14 @@ server.tool(
       try {
         const page = await fetchPage(href);
         await writeCache(href, `# ${page.title}\n\nSource: ${page.url}\n\n${page.markdown}`);
+        db.pages[href] = { title, fetchedAt: Date.now() };
         fetched.push(`## ${title}\nURL: ${href}\n\n${page.markdown.slice(0, 500)}...`);
       } catch (e) {
         fetched.push(`## ${title}\nURL: ${href}\nError: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+
+    await writeDb(db);
 
     return {
       content: [{ type: "text" as const, text: `Fetched ${fetched.length} page(s) matching "${query}" (now cached):\n\n${fetched.join("\n\n---\n\n")}` }],
@@ -113,7 +110,6 @@ server.tool(
   },
   async ({ section, fetchAll, concurrency }) => {
     if (fetchAll) {
-      // Reuse the populate logic, capture output
       const oldLog = console.log;
       const lines: string[] = [];
       console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
@@ -133,37 +129,32 @@ server.tool(
         ? Object.entries(ENTRY_POINTS)
         : [[section, ENTRY_POINTS[section as keyof typeof ENTRY_POINTS]] as const];
 
-    let allLinks: { href: string; title: string }[] = [];
+    const db = await readDb();
     const sectionResults: string[] = [];
+    let discovered = 0;
 
     for (const [name, entryUrl] of entries) {
       try {
         const links = await discoverLinks(entryUrl);
-        allLinks = allLinks.concat(links);
+        for (const link of links) {
+          if (!db.pages[link.href]) {
+            db.pages[link.href] = { title: link.title, fetchedAt: null };
+            discovered++;
+          }
+        }
         sectionResults.push(`${name}: ${links.length} pages found`);
       } catch (e) {
         sectionResults.push(`${name}: Error - ${e instanceof Error ? e.message : String(e)}`);
       }
     }
 
-    // Deduplicate
-    const seen = new Set<string>();
-    allLinks = allLinks.filter((l) => {
-      if (seen.has(l.href)) return false;
-      seen.add(l.href);
-      return true;
-    });
-
-    // Save index
-    const existingIndex = (await readIndex()) || [];
-    const existingHrefs = new Set(existingIndex.map((l) => l.href));
-    const merged = [...existingIndex, ...allLinks.filter((l) => !existingHrefs.has(l.href))];
-    await writeIndex(merged);
+    await writeDb(db);
+    const total = Object.keys(db.pages).length;
 
     return {
       content: [{
         type: "text" as const,
-        text: `Discovered ${allLinks.length} unique pages (${merged.length} total in index).\n\n${sectionResults.join("\n")}\n\nRun with fetchAll=true to download and cache all pages as markdown.`,
+        text: `Discovered ${discovered} new pages (${total} total in db).\n\n${sectionResults.join("\n")}\n\nRun with fetchAll=true to download and cache all pages as markdown.`,
       }],
     };
   }
@@ -174,7 +165,6 @@ server.tool(
   "Fetch a specific Samsung docs page by URL path and return its content as markdown. The result is cached for future local searches.",
   { url: z.string().describe("URL path (e.g. '/smarttv/develop/guides/fundamentals/multitasking.html') or full URL") },
   async ({ url }) => {
-    // Check cache first
     const cached = await readCached(url);
     if (cached) {
       return {
@@ -186,6 +176,11 @@ server.tool(
       const page = await fetchPage(url);
       const content = `# ${page.title}\n\nSource: ${page.url}\n\n${page.markdown}`;
       await writeCache(url, content);
+
+      const db = await readDb();
+      db.pages[url] = { title: page.title, fetchedAt: Date.now() };
+      await writeDb(db);
+
       return {
         content: [{ type: "text" as const, text: content }],
       };
@@ -205,7 +200,7 @@ server.tool(
   async () => {
     const count = await clearCache();
     return {
-      content: [{ type: "text" as const, text: `Cleared ${count} cached pages and index.` }],
+      content: [{ type: "text" as const, text: `Cleared ${count} cached pages and db.` }],
     };
   }
 );
@@ -216,14 +211,34 @@ server.tool(
   {},
   async () => {
     const stats = await cacheStats();
+    const populatedLabel = stats.populatedAt
+      ? new Date(stats.populatedAt).toISOString()
+      : "never";
     return {
       content: [{
         type: "text" as const,
-        text: `Cache directory: ${stats.cacheDir}\nIndex exists: ${stats.indexExists}\nCached pages: ${stats.pageCount}`,
+        text: `Cache directory: ${stats.cacheDir}\nPopulated: ${populatedLabel}\nCached pages: ${stats.pageCount}`,
       }],
     };
   }
 );
+
+// --- Background populate on first run + weekly refresh ---
+
+(async () => {
+  const db = await readDb();
+  if (!db.populatedAt) {
+    console.log("[startup] First run — populating in background...");
+    populate().catch((e) => console.error("[startup] Populate failed:", e));
+  }
+})();
+
+setInterval(() => {
+  console.log("[refresh] Weekly refresh starting...");
+  populate().catch((e) => console.error("[refresh] Populate failed:", e));
+}, WEEK_MS);
+
+// --- HTTP transport ---
 
 let activeTransport: WebStandardStreamableHTTPServerTransport | null = null;
 

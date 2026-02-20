@@ -18,20 +18,40 @@ async function fetchHtml(url: string): Promise<HTMLElement> {
 }
 
 export async function discoverLinks(entryUrl: string): Promise<{ href: string; title: string }[]> {
-  const doc = await fetchHtml(entryUrl);
+  const entry = new URL(entryUrl, BASE_URL);
+  const inheritParams = new URLSearchParams(entry.search);
+
+  const doc = await fetchHtml(entry.href);
   const links = doc.querySelectorAll(".sdp-lnb-menu a.nav-link");
   const results: { href: string; title: string }[] = [];
   const seen = new Set<string>();
 
   for (const a of links) {
-    const href = a.getAttribute("href");
+    const rawHref = a.getAttribute("href");
     const title = a.text.trim();
-    if (!href || seen.has(href)) continue;
-    // Only include relative Samsung docs links (skip external tizen.org, onlinedocs, etc.)
-    if (href.startsWith("/smarttv/")) {
-      seen.add(href);
-      results.push({ href, title });
+    if (!rawHref) continue;
+
+    let linkUrl: URL;
+    try {
+      linkUrl = new URL(rawHref, BASE_URL);
+    } catch {
+      continue;
     }
+
+    // Skip external links (tizen.org, onlinedocs, etc.)
+    if (linkUrl.origin !== entry.origin) continue;
+
+    // Propagate query params from entry URL to discovered links
+    for (const [key, value] of inheritParams) {
+      if (!linkUrl.searchParams.has(key)) {
+        linkUrl.searchParams.set(key, value);
+      }
+    }
+
+    const href = linkUrl.pathname + linkUrl.search;
+    if (seen.has(href)) continue;
+    seen.add(href);
+    results.push({ href, title });
   }
 
   return results;
@@ -143,6 +163,6 @@ export async function fetchPage(url: string): Promise<{ title: string; markdown:
 export const ENTRY_POINTS = {
   "smarttv-develop": "/smarttv/develop/specifications/general-specifications.html",
   "smarttv-api": "/smarttv/develop/api-references/samsung-product-api-references.html",
-  "smarttv-signage-api": "/smarttv/develop/api-references/samsung-product-api-references-signage.html",
+  "smarttv-signage-api": "/smarttv/develop/api-references/samsung-product-api-references-signage.html?device=signage",
   "smarttv-design": "/smarttv/design/overview.html",
 } as const;

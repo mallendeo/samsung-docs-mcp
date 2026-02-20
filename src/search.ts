@@ -36,7 +36,16 @@ function createIndex(): MiniSearch<SearchDoc> {
 }
 
 function fileToUrl(fileName: string): string {
-  return "/" + fileName.replace(/\.md$/, "").replace(/__/g, "/");
+  const name = fileName.replace(/\.md$/, "");
+  const qIdx = name.indexOf("_q_");
+
+  if (qIdx !== -1) {
+    const pathPart = name.slice(0, qIdx);
+    const queryPart = name.slice(qIdx + 3);
+    return "/" + pathPart.replace(/__/g, "/") + "?" + queryPart;
+  }
+
+  return "/" + name.replace(/__/g, "/");
 }
 
 function extractTitle(content: string): string {

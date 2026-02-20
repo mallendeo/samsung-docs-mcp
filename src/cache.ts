@@ -3,6 +3,17 @@ import { homedir } from "os";
 import { addToSearchIndex, resetSearchIndex } from "./search.js";
 
 const CACHE_DIR = process.env.CACHE_DIR || join(homedir(), ".cache", "mcp", "samsung-docs");
+const DB_PATH = join(CACHE_DIR, "db.json");
+
+export interface PageEntry {
+  title: string;
+  fetchedAt: number | null; // epoch ms, null = discovered but not fetched
+}
+
+export interface DocsDb {
+  populatedAt: number | null; // epoch ms of last successful full populate
+  pages: Record<string, PageEntry>; // keyed by href
+}
 
 async function ensureCacheDir(subdir?: string) {
   const dir = subdir ? join(CACHE_DIR, subdir) : CACHE_DIR;
@@ -11,18 +22,34 @@ async function ensureCacheDir(subdir?: string) {
 }
 
 function urlToPath(url: string): string {
-  // Remove protocol and domain
-  let path = url.replace(/^https?:\/\/[^/]+/, "");
-  // Remove query params and hash
-  path = path.split("?")[0].split("#")[0];
-  // Remove leading slash, replace remaining slashes with __
-  path = path.replace(/^\//, "").replace(/\//g, "__");
-  // Ensure .md extension
-  if (!path.endsWith(".md")) {
-    path = path.replace(/\.html?$/, "") + ".md";
+  const parsed = new URL(url, "https://developer.samsung.com");
+  let result = parsed.pathname.replace(/^\//, "").replace(/\//g, "__").replace(/\.html?$/, "");
+
+  // Include sorted query params so different variants get separate cache entries
+  if (parsed.search) {
+    parsed.searchParams.sort();
+    result += `_q_${parsed.searchParams.toString()}`;
   }
-  return path;
+
+  return result + ".md";
 }
+
+// --- db ---
+
+export async function readDb(): Promise<DocsDb> {
+  const file = Bun.file(DB_PATH);
+  if (await file.exists()) {
+    return file.json();
+  }
+  return { populatedAt: null, pages: {} };
+}
+
+export async function writeDb(db: DocsDb): Promise<void> {
+  await ensureCacheDir();
+  await Bun.write(DB_PATH, JSON.stringify(db));
+}
+
+// --- page cache ---
 
 export async function readCached(url: string): Promise<string | null> {
   const filePath = join(CACHE_DIR, "pages", urlToPath(url));
@@ -42,29 +69,7 @@ export async function writeCache(url: string, content: string): Promise<string> 
   return filePath;
 }
 
-export async function readIndex(): Promise<{ href: string; title: string }[] | null> {
-  const filePath = join(CACHE_DIR, "index.json");
-  const file = Bun.file(filePath);
-  if (await file.exists()) {
-    return file.json();
-  }
-  return null;
-}
-
-export async function writeIndex(index: { href: string; title: string }[]): Promise<void> {
-  await ensureCacheDir();
-  await Bun.write(join(CACHE_DIR, "index.json"), JSON.stringify(index, null, 2));
-}
-
-export async function listCachedPages(): Promise<string[]> {
-  const pagesDir = join(CACHE_DIR, "pages");
-  const glob = new Bun.Glob("*.md");
-  const files: string[] = [];
-  for await (const file of glob.scan({ cwd: pagesDir, absolute: false })) {
-    files.push(file);
-  }
-  return files;
-}
+// --- maintenance ---
 
 export async function clearCache(): Promise<number> {
   const pagesDir = join(CACHE_DIR, "pages");
@@ -74,17 +79,20 @@ export async function clearCache(): Promise<number> {
     await Bun.file(join(pagesDir, fileName)).delete();
     count++;
   }
-  const indexFile = Bun.file(join(CACHE_DIR, "index.json"));
-  if (await indexFile.exists()) {
-    await indexFile.delete();
+  const dbFile = Bun.file(DB_PATH);
+  if (await dbFile.exists()) {
+    await dbFile.delete();
   }
   resetSearchIndex();
   return count;
 }
 
-export async function cacheStats(): Promise<{ pageCount: number; indexExists: boolean; cacheDir: string }> {
-  const pages = await listCachedPages().catch(() => []);
-  const indexFile = Bun.file(join(CACHE_DIR, "index.json"));
-  const indexExists = await indexFile.exists();
-  return { pageCount: pages.length, indexExists, cacheDir: CACHE_DIR };
+export async function cacheStats(): Promise<{
+  pageCount: number;
+  populatedAt: number | null;
+  cacheDir: string;
+}> {
+  const db = await readDb();
+  const fetched = Object.values(db.pages).filter((p) => p.fetchedAt !== null).length;
+  return { pageCount: fetched, populatedAt: db.populatedAt, cacheDir: CACHE_DIR };
 }

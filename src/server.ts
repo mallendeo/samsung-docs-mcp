@@ -252,6 +252,92 @@ server.tool(
   }
 );
 
+server.tool(
+  "list-apis",
+  "Extract and list all Samsung Product API privileges from cached docs, grouped by privilege level. Scans all product API reference pages (TV + Signage) and returns API name, privilege level, and privilege URL.",
+  {
+    files: z.array(z.string()).optional().describe("Glob patterns to filter pages (default: ['*samsung-product-api-references/*-api*'])"),
+  },
+  async ({ files }) => {
+    const db = await readDb();
+    const patterns = files?.length ? files : ["*samsung-product-api-references/*-api*"];
+    const entries = Object.entries(db.pages).filter(([href]) =>
+      patterns.some((p) => matchesGlob(href, p))
+    );
+
+    interface ApiInfo {
+      api: string;
+      level: string;
+      privilege: string;
+      device: string | null;
+    }
+
+    const apis: ApiInfo[] = [];
+
+    for (const [href, entry] of entries) {
+      const content = await readCached(href);
+      if (!content) continue;
+
+      const device = href.includes("device=signage") ? "signage" : href.includes("device=htv") ? "htv" : null;
+      const apiName = entry.title;
+
+      // Extract privilege blocks: "Privilege Level : X" followed by "Privilege : URL"
+      const levelPattern = /Privilege\s+Level\s*:\s*(Public|Partner|Platform)/gi;
+      const privPattern = /Privilege\s*:\s*(http\S+)/gi;
+
+      const levels = [...content.matchAll(levelPattern)].map((m) => m[1]);
+      const privs = [...content.matchAll(privPattern)].map((m) => m[1]);
+
+      if (levels.length === 0 && privs.length === 0) {
+        apis.push({ api: apiName, level: "none", privilege: "-", device });
+        continue;
+      }
+
+      // Deduplicate level+privilege pairs
+      const seen = new Set<string>();
+      const count = Math.max(levels.length, privs.length);
+      for (let i = 0; i < count; i++) {
+        const level = (levels[i] || levels[0] || "unknown").toLowerCase();
+        const priv = privs[i] || privs[0] || "unknown";
+        const key = `${level}|${priv}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        apis.push({ api: apiName, level, privilege: priv, device });
+      }
+    }
+
+    // Group by level
+    const grouped: Record<string, ApiInfo[]> = {};
+    for (const api of apis) {
+      const key = api.level;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(api);
+    }
+
+    const sections: string[] = [];
+    for (const level of ["partner", "public", "platform", "none"]) {
+      const items = grouped[level];
+      if (!items) continue;
+
+      const label = level === "none" ? "No privileges required" : level.charAt(0).toUpperCase() + level.slice(1);
+      const lines = items.map((a) => {
+        const suffix = a.device ? ` (${a.device})` : "";
+        return a.level === "none"
+          ? `- ${a.api}${suffix}`
+          : `- ${a.api}${suffix} — ${a.privilege}`;
+      });
+      sections.push(`### ${label}\n${lines.join("\n")}`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `${apis.length} API privilege entries from ${entries.length} pages:\n\n${sections.join("\n\n")}`,
+      }],
+    };
+  }
+);
+
 // --- Background populate on first run + weekly refresh ---
 
 (async () => {

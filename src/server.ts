@@ -338,6 +338,65 @@ server.tool(
   }
 );
 
+server.tool(
+  "api-overview",
+  "Return a compact overview of all Samsung Product APIs by extracting the WebIDL definitions from each cached API reference page. Groups by API name with privilege info. Much smaller than fetching full pages.",
+  {
+    files: z.array(z.string()).optional().describe("Glob patterns to filter pages (default: ['*samsung-product-api-references/*-api*'])"),
+    device: z.enum(["all", "tv", "signage"]).default("all").describe("Filter by device type"),
+  },
+  async ({ files, device }) => {
+    const db = await readDb();
+    const patterns = files?.length ? files : ["*samsung-product-api-references/*-api*"];
+    let entries = Object.entries(db.pages).filter(([href]) =>
+      patterns.some((p) => matchesGlob(href, p))
+    );
+
+    if (device === "signage") {
+      entries = entries.filter(([href]) => href.includes("device=signage"));
+    } else if (device === "tv") {
+      entries = entries.filter(([href]) => !href.includes("device="));
+    }
+
+    const sections: string[] = [];
+
+    for (const [href, entry] of entries) {
+      const content = await readCached(href);
+      if (!content) continue;
+
+      const suffix = href.includes("device=signage") ? " (signage)" : href.includes("device=htv") ? " (htv)" : "";
+
+      // Extract privilege info
+      const levelMatch = content.match(/Privilege\s+Level\s*:\s*(Public|Partner|Platform)/i);
+      const privMatch = content.match(/Privilege\s*:\s*(http\S+)/);
+      const privLine = levelMatch
+        ? `${levelMatch[1]}${privMatch ? ` — ${privMatch[1]}` : ""}`
+        : "none";
+
+      // Extract Full WebIDL block
+      const webidlMatch = content.match(/## (?:\d+\.\s*)?Full WebIDL\s*\n+```[\s\S]*?\n([\s\S]*?)\n```/);
+      if (webidlMatch) {
+        sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n\`\`\`webidl\n${webidlMatch[1].trim()}\n\`\`\``);
+      } else {
+        // Fallback: extract Summary of Interfaces and Methods table
+        const summaryMatch = content.match(/## Summary of Interfaces and Methods\s*\n([\s\S]*?)(?=\n## )/);
+        if (summaryMatch) {
+          sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n${summaryMatch[1].trim()}`);
+        } else {
+          sections.push(`## ${entry.title}${suffix}\nPrivilege: ${privLine}\n(no WebIDL or summary found)`);
+        }
+      }
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `${entries.length} API(s):\n\n${sections.join("\n\n---\n\n")}`,
+      }],
+    };
+  }
+);
+
 // --- Background populate on first run + weekly refresh ---
 
 (async () => {

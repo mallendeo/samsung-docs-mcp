@@ -5,8 +5,9 @@ import { discoverLinks, fetchPage, ENTRY_POINTS } from "./scraper.js";
 import { readCached, writeCache, readDb, writeDb, clearCache, cacheStats } from "./cache.js";
 import { search, matchesGlob } from "./search.js";
 import { populate, WEEK_MS } from "./populate.js";
+import pkg from "../package.json";
 
-const { version } = await Bun.file(new URL("../package.json", import.meta.url)).json();
+const { version } = pkg;
 
 // CLI: bun run src/server.ts --populate [--concurrency 5] [--section all]
 if (process.argv.includes("--populate")) {

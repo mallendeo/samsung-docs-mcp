@@ -1,0 +1,11 @@
+services:
+  samsung-docs-mcp:
+    image: ghcr.io/mallendeo/samsung-docs-mcp:latest
+    ports:
+      - "8787:8787"
+    volumes:
+      - cache:/data
+    restart: unless-stopped
+
+volumes:
+  cache:

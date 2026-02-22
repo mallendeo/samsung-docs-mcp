@@ -1,4 +1,4 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
 import { discoverLinks, fetchPage, ENTRY_POINTS } from "./scraper.js";
@@ -75,11 +75,160 @@ if (process.argv.includes("--populate")) {
 }
 
 const PORT = Number(process.env.PORT) || 8787;
+const SAMSUNG_DOCS_BASE_URL = "https://developer.samsung.com";
+const RESOURCE_PAGE_LIST_LIMIT = Number(process.env.RESOURCE_PAGE_LIST_LIMIT ?? 120);
+
+function normalizeDocsHref(value: string): string {
+  const parsed = new URL(value, SAMSUNG_DOCS_BASE_URL);
+  return parsed.pathname + parsed.search;
+}
 
 const server = new McpServer({
   name: "samsung-docs",
   version,
 });
+
+server.registerResource(
+  "cache-status",
+  "samsung-docs://cache/status",
+  {
+    title: "Samsung Docs Cache Status",
+    description: "Current cache directory and indexing status for samsung-docs-mcp.",
+    mimeType: "application/json",
+  },
+  async () => {
+    const stats = await cacheStats();
+    const payload = {
+      name: "samsung-docs",
+      version,
+      cache: {
+        directory: stats.cacheDir,
+        cachedPages: stats.pageCount,
+        populatedAt: stats.populatedAt ? new Date(stats.populatedAt).toISOString() : null,
+      },
+    };
+
+    return {
+      contents: [{
+        uri: "samsung-docs://cache/status",
+        mimeType: "application/json",
+        text: JSON.stringify(payload, null, 2),
+      }],
+    };
+  }
+);
+
+server.registerResource(
+  "docs-summary",
+  "samsung-docs://docs/summary",
+  {
+    title: "Samsung Docs Summary",
+    description: "Summary of discovered pages and how to read an individual page resource.",
+    mimeType: "application/json",
+  },
+  async () => {
+    const db = await readDb();
+    const entries = Object.entries(db.pages);
+    const fetchedCount = entries.filter(([, page]) => page.fetchedAt !== null).length;
+    const samplePages = entries.slice(0, 20).map(([href, page]) => ({
+      href,
+      title: page.title,
+      uri: `samsung-docs://page?href=${encodeURIComponent(href)}`,
+    }));
+
+    const payload = {
+      discoveredPages: entries.length,
+      cachedPages: fetchedCount,
+      populatedAt: db.populatedAt ? new Date(db.populatedAt).toISOString() : null,
+      pageResourceTemplate: "samsung-docs://page{?href}",
+      samplePages,
+    };
+
+    return {
+      contents: [{
+        uri: "samsung-docs://docs/summary",
+        mimeType: "application/json",
+        text: JSON.stringify(payload, null, 2),
+      }],
+    };
+  }
+);
+
+server.registerResource(
+  "page",
+  new ResourceTemplate("samsung-docs://page{?href}", {
+    list: async () => {
+      const db = await readDb();
+      const entries = Object.entries(db.pages)
+        .sort((a, b) => (b[1].fetchedAt ?? 0) - (a[1].fetchedAt ?? 0))
+        .slice(0, RESOURCE_PAGE_LIST_LIMIT);
+
+      return {
+        resources: entries.map(([href, page]) => ({
+          uri: `samsung-docs://page?href=${encodeURIComponent(href)}`,
+          name: page.title,
+          title: page.title,
+          description: `Samsung docs page (${href})`,
+          mimeType: "text/markdown",
+        })),
+      };
+    },
+    complete: {
+      href: async (value) => {
+        const db = await readDb();
+        const query = value.toLowerCase();
+        return Object.keys(db.pages)
+          .filter((href) => href.toLowerCase().includes(query))
+          .slice(0, 25);
+      },
+    },
+  }),
+  {
+    title: "Samsung Docs Page",
+    description: "Read any Samsung docs page by passing href in the resource URI query string.",
+    mimeType: "text/markdown",
+  },
+  async (uri) => {
+    const rawHref = uri.searchParams.get("href");
+    if (!rawHref) {
+      return {
+        contents: [{
+          uri: uri.toString(),
+          mimeType: "text/plain",
+          text: "Missing required query parameter: href",
+        }],
+      };
+    }
+
+    const href = normalizeDocsHref(rawHref);
+    const cached = await readCached(href);
+    if (cached) {
+      return {
+        contents: [{
+          uri: uri.toString(),
+          mimeType: "text/markdown",
+          text: cached,
+        }],
+      };
+    }
+
+    const page = await fetchPage(href);
+    const content = `# ${page.title}\n\nSource: ${page.url}\n\n${page.markdown}`;
+    await writeCache(href, content);
+
+    const db = await readDb();
+    db.pages[href] = { title: page.title, fetchedAt: Date.now() };
+    await writeDb(db);
+
+    return {
+      contents: [{
+        uri: uri.toString(),
+        mimeType: "text/markdown",
+        text: content,
+      }],
+    };
+  }
+);
 
 server.tool(
   "search",

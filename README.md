@@ -1,24 +1,37 @@
 # samsung-docs-mcp
 
-MCP server that scrapes and caches Samsung Smart TV and Signage documentation from developer.samsung.com.
+MCP server for Samsung Developer documentation (`developer.samsung.com`) focused on Smart TV and Signage.
 
-Automatically populates the cache on first run and refreshes weekly (TTL-based, only re-fetches stale pages).
+## Behavior
 
-## Setup
+- Discovers documentation pages from predefined entry points.
+- Caches page content as markdown in a local cache directory.
+- Builds a local full-text index for search.
+- Starts a background populate job on first run.
+- Runs a weekly refresh using TTL-based refetching.
+
+## Local Run
 
 ```bash
 bun install
-bun run start        # http://localhost:8787/mcp
-bun run populate     # pre-cache all ~330 docs pages
+bun run start
 ```
 
-### Docker
+Server endpoint: `http://localhost:8787/mcp`
+
+Populate cache manually:
+
+```bash
+bun run populate
+```
+
+## Docker
 
 ```bash
 docker compose up -d
 ```
 
-## MCP config
+## MCP Configuration
 
 ```json
 {
@@ -32,62 +45,93 @@ docker compose up -d
 
 ## Tools
 
-### search
+### `search`
 
-Full-text search over cached docs (BM25+ with fuzzy matching). Falls back to fetching matching pages on demand if the local index has no results.
+Search cached docs using MiniSearch (BM25 + fuzzy + prefix). If no local match is found, fetches a small set of matching pages based on title and stores them in cache.
 
-- `query` (string) — search query
-- `maxResults` (number, default 10) — max results to return
-- `files` (string[], optional) — glob patterns to filter which pages to search (e.g. `["*product-api*", "*signage*"]`)
+Arguments:
 
-### discover
+- `query` (`string`, required)
+- `maxResults` (`number`, default `10`)
+- `files` (`string[]`, optional glob filter)
 
-Crawl Samsung docs sidebars to discover all pages. Optionally fetch and cache every page.
+### `discover`
 
-- `section` (enum, default "all") — `smarttv-develop`, `smarttv-api`, `smarttv-signage-api`, `smarttv-design`, or `all`
-- `fetchAll` (boolean, default false) — download and cache every discovered page
-- `concurrency` (number, default 3) — concurrent fetches when `fetchAll=true`
+Discovers pages from one docs section or all sections. Can optionally fetch and cache every discovered page.
 
-### fetch-page
+Arguments:
 
-Fetch a single Samsung docs page by URL path and return its content as markdown. Result is cached.
+- `section` (`"smarttv-develop" | "smarttv-api" | "smarttv-signage-api" | "smarttv-design" | "all"`, default `"all"`)
+- `fetchAll` (`boolean`, default `false`)
+- `concurrency` (`number`, default `3`, used when `fetchAll=true`)
 
-- `url` (string) — URL path (e.g. `/smarttv/develop/guides/fundamentals/multitasking.html`) or full URL
+### `fetch-page`
 
-### list-pages
+Fetches a single page and stores it in cache.
 
-List all known documentation pages. Supports glob filtering on URL paths.
+Arguments:
 
-- `files` (string[], optional) — glob patterns to filter pages (e.g. `["*product-api*"]`)
+- `url` (`string`, required): path or full URL
 
-### list-apis
+### `list-pages`
 
-Extract all Samsung Product API privileges from cached docs, grouped by privilege level.
+Lists pages present in `db.json`.
 
-- `files` (string[], optional) — glob patterns to filter pages (default: `["*samsung-product-api-references/*-api*"]`)
-- `since` (string, optional) — version filter using operators: `>=4`, `<6.5`, `>=2,<=5`. Filters by API-level Since version.
+Arguments:
 
-### api-overview
+- `files` (`string[]`, optional glob filter)
 
-Compact overview of all Samsung Product APIs via WebIDL definitions extracted from each cached API reference page. When `since` is provided, shows per-method version info instead of WebIDL.
+### `list-apis`
 
-- `files` (string[], optional) — glob patterns to filter pages (default: `["*samsung-product-api-references/*-api*"]`)
-- `device` (enum, default "all") — `tv`, `signage`, or `all`
-- `since` (string, optional) — version filter using operators: `>=4`, `<6.5`, `>=2,<=5`, `!=3`. Comma-separated for ranges. Filters individual methods by their Since version.
+Extracts Samsung Product API privilege metadata from cached API reference pages.
 
-### clear-cache
+Arguments:
 
-Wipe all cached pages and the db. Use to force a full re-fetch.
+- `files` (`string[]`, optional, default `["*samsung-product-api-references/*-api*"]`)
+- `since` (`string`, optional version filter, example `">=4,<6.5"`)
 
-### cache-status
+### `api-overview`
 
-Show cache stats: directory, populate timestamp, number of cached pages.
+Builds a compact API summary from cached Product API pages. Returns WebIDL by default, or per-method version details when `since` is set.
 
-## Cache
+Arguments:
 
-Cache lives at `~/.cache/mcp/samsung-docs/` (or `$CACHE_DIR`).
+- `files` (`string[]`, optional, default `["*samsung-product-api-references/*-api*"]`)
+- `device` (`"all" | "tv" | "signage"`, default `"all"`)
+- `since` (`string`, optional version filter)
 
-- `db.json` — page index with per-page `fetchedAt` timestamps for TTL-based refresh
-- `pages/*.md` — cached markdown content
+### `clear-cache`
 
-Signage API pages are fetched with `?device=signage` and cached separately from their TV counterparts.
+Deletes cached markdown pages and `db.json`.
+
+### `cache-status`
+
+Returns cache directory, last populate timestamp, and cached page count.
+
+## Resources
+
+This server implements MCP resource endpoints: `resources/list`, `resources/read`, and `resources/templates/list`.
+
+Static resources:
+
+- `samsung-docs://cache/status` (`application/json`)
+- `samsung-docs://docs/summary` (`application/json`)
+
+Resource template:
+
+- `samsung-docs://page{?href}` (`text/markdown`)
+
+Example page URI:
+
+- `samsung-docs://page?href=%2Fsmarttv%2Fdevelop%2Fapi-references%2Fsamsung-product-api-references.html`
+
+`resources/list` includes page resources generated from `db.json` and is capped by `RESOURCE_PAGE_LIST_LIMIT` (default `120`).
+
+## Cache Layout
+
+Default cache path: `~/.cache/mcp/samsung-docs` (override with `CACHE_DIR`).
+
+- `db.json`: discovered pages and per-page `fetchedAt` timestamps
+- `pages/*.md`: cached markdown documents
+
+Signage variants are stored as separate entries using query parameters (for example `?device=signage`).
